@@ -7,30 +7,47 @@ import hashlib
 import urllib
 import time
 import csv
+import random_bil_cookie
+import random
 
 # 获取B站的Header
 def get_Header():
-    with open('bili_cookie.txt','r') as f:
-            cookie=f.read()
-    header={
-            "Cookie":cookie,
-            "User-Agent":'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0'
-    }
+    cookie = random_bil_cookie.get_random_cookies(format_as_string=True)
+
+    header = {
+            'User-Agent': f'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{random.randint(120, 135)}.0.0.0 Safari/537.36 Edg/{random.randint(120, 135)}.0.0.0',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6,zh-TW;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-User': '?1',
+            'sec-ch-ua': '"Microsoft Edge";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'Cache-Control': 'max-age=0',
+            'Priority': 'u=0, i',
+            'Cookie': cookie,
+        }
     return header
 
 
-# 通过bv号，获取视频的oid
+# 通过bv号，获取视频的aid
 def get_information(bv):
     resp = requests.get(f"https://www.bilibili.com/video/{bv}/?p=14&spm_id_from=pageDriver&vd_source=cd6ee6b033cd2da64359bad72619ca8a",headers=get_Header())
     # 提取视频oid
     obj = re.compile(f'"aid":(?P<id>.*?),"bvid":"{bv}"')
-    oid = obj.search(resp.text).group('id')
+    aid = obj.search(resp.text).group('id')
 
     # 提取视频的标题
     obj = re.compile(r'<title data-vue-meta="true">(?P<title>.*?)</title>')
     title = obj.search(resp.text).group('title')
 
-    return oid, title
+    return aid, title
 
 # 轮页爬取
 def start(bv, oid, pageID, count, csv_writer, is_second):
