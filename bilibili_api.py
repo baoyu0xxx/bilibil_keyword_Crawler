@@ -19,7 +19,7 @@ class BilibiliAPI:
         self.api_host = "api.bilibili.com"
         self.main_host = "www.bilibili.com"
         self.api_prefix = "/x"
-        self.cookie = random_bil_cookie.get_random_cookies()
+        self.cookie = random_bil_cookie.get_random_cookies(scene='search',timestamp=int(time.time()))
 
     
     async def _get_html(self, url, referer="https://www.bilibili.com",cookie=None) -> str:
@@ -76,8 +76,6 @@ class BilibiliAPI:
                 search_url += f"&pubtime_begin_s={time_begin}&pubtime_end_s={time_end}"
             except ValueError as e:
                 raise ValueError(f"时间格式错误: {e}")
-
-        # print(f"搜索URL: {search_url}")
         
         # 使用bil_search_page获取搜索结果
         video_df = bil_search_page(search_url)
@@ -97,42 +95,88 @@ class BilibiliAPI:
         
         # 结果存储
         results = []
+        failed_videos = []
         
         # 对每个BV号获取详细信息
         total_videos = len(video_df)
-        with tqdm(total=total_videos, desc="获取视频信息") as pbar:
+        with tqdm(total=total_videos, desc="第一轮获取视频信息") as pbar:
             for _, video in video_df.iterrows():
                 bv_id = video['BV号']
-                if bv_id == "N/A":
-                    pbar.update(1)
-                    continue
                 
                 try:
-                    # 更新进度条描述，显示当前处理的BV号
-                    pbar.set_description(f"处理 {bv_id}")
-                    
                     # 构建视频页面URL
                     video_url = f"https://{self.main_host}/video/{bv_id}"
                     
                     # 获取视频页面HTML
                     html_content = await self._get_html(video_url)
                     
-                    # 解析视频信息
+                    # 解析
                     video_data = self._parse_video_html(html_content)
                     
                     if video_data:
                         results.append(video_data)
                         pbar.set_postfix({"状态": "成功"})
                     else:
+                        # 解析失败，添加到失败列表
+                        failed_videos.append((bv_id, video))
                         pbar.set_postfix({"状态": "解析失败"})
-                    
+                
                 except Exception as e:
-                    pbar.set_postfix({"状态": f"错误: {str(e)[:30]}..."})
-                    continue
-                finally:
+                    # 请求失败，添加到失败列表
+                    failed_videos.append((bv_id, video))
+                    pbar.set_postfix({"状态": f"错误: {str(e)[:20]}..."})
+                
+                pbar.update(1)
+                # 添加随机延迟，避免请求过于频繁
+                await asyncio.sleep(0.3 + 0.4 * random.random())
+        
+        # 如果有失败的，进行第二轮尝试
+        if failed_videos:
+            print(f"\n第一轮处理后，有 {len(failed_videos)} 个视频需要重新尝试获取...")
+            # 随机打乱顺序，减少连续请求同一资源的概率
+            random.shuffle(failed_videos)
+            
+            # 第二轮：集中处理之前失败的视频
+            with tqdm(total=len(failed_videos), desc="第二轮重试获取视频") as pbar:
+                for bv_id, video in failed_videos:
+                    try:
+                        # 更新进度条描述
+                        pbar.set_description(f"重试 {bv_id}")
+                        
+                        # 构建视频页面URL
+                        video_url = f"https://{self.main_host}/video/{bv_id}"
+                        
+                        # 获取视频页面HTML - 使用不同的cookie进行尝试
+                        html_content = await self._get_html(
+                            video_url,
+                            cookie=random_bil_cookie.get_random_cookies(scene='search',timestamp=int(time.time()))
+                        )
+                        
+                        # 解析
+                        video_data = self._parse_video_html(html_content)
+                        
+                        if video_data:
+                            results.append(video_data)
+                            pbar.set_postfix({"状态": "成功"})
+                        else:
+                            # 解析仍然失败，添加基本信息
+                            basic_info = self._create_basic_info(bv_id, video)
+                            results.append(basic_info)
+                            pbar.set_postfix({"状态": "解析失败，使用基本信息"})
+                    
+                    except Exception as e:
+                        # 二次尝试仍然失败，添加基本信息
+                        basic_info = self._create_basic_info(bv_id, video)
+                        results.append(basic_info)
+                        pbar.set_postfix({"状态": f"最终失败: {str(e)[:20]}..."})
+                    
                     pbar.update(1)
-                    # 添加延迟避免请求过于频繁
-                    await asyncio.sleep(0.5 + 0.5 * random.random())
+                    # 增加等待时间避免被限流
+                    await asyncio.sleep(0.5 + 1.0 * random.random())
+        
+        # 输出最终统计
+        success_count = sum(1 for r in results if not r['video'].get('_error'))
+        print(f"\n处理完成: {success_count}/{len(results)} 个视频信息获取成功")
         
         return results
     
@@ -266,13 +310,77 @@ class BilibiliAPI:
             })
         
         return honors
+    
+
+    def _create_basic_info(self, bv_id, video):
+        """直接从搜索结果DataFrame行获取基本信息"""
+        try:
+            # 获取播放量并处理格式
+            view_count = 0
+            if '播放量' in video:
+                view_str = str(video.get('播放量', '0'))
+                if '万' in view_str:
+                    view_str = view_str.replace('万', '')
+                    try:
+                        view_count = float(view_str) * 10000
+                    except ValueError:
+                        view_count = 0
+                else:
+                    try:
+                        view_count = int(view_str.replace(',', ''))
+                    except ValueError:
+                        view_count = 0
+            
+            # 创建一个包含基本信息的字典
+            return {
+                "video": {
+                    "bvid": bv_id,
+                    "aid": 0,
+                    "title": video.get('标题', '获取失败'),
+                    "description": video.get('视频介绍', ''),
+                    "pubdate": video.get('发布时间', ''),
+                    "duration": video.get('时长', ''),
+                    "cover_url": "",  # 搜索结果中通常没有封面URL
+                    
+                    # 统计信息
+                    "view_count": view_count,
+                    "like_count": int(video.get('点赞数', 0)) if video.get('点赞数', 'N/A') != 'N/A' else 0,
+                    "favorite_count": int(video.get('收藏数', 0)) if video.get('收藏数', 'N/A') != 'N/A' else 0,
+                    "reply_count": int(video.get('评论数', 0)) if video.get('评论数', 'N/A') != 'N/A' else 0,
+                    
+                    # 标记为失败
+                    "_error": "详情获取失败"
+                },
+                "owner": {
+                    "name": video.get('作者', video.get('UP主', '获取失败')),
+                    "mid": 0,
+                    "face_url": ""
+                },
+                "pages": [],
+                "honors": []
+            }
+        except Exception as e:
+            # 若处理失败，则返回最小化信息
+            print(f"创建基本信息失败: {str(e)}")
+            return {
+                "video": {
+                    "bvid": bv_id,
+                    "title": str(video.get('标题', '获取失败')),
+                    "_error": f"基本信息获取失败: {str(e)[:50]}"
+                },
+                "owner": {
+                    "name": str(video.get('作者', video.get('UP主', '获取失败'))),
+                    "mid": 0
+                },
+                "pages": [],
+                "honors": []
+            }
 
 # 使用示例
-async def main():
+if __name__ == "__main__":
     api = BilibiliAPI()
     keyword = "翁法罗斯"
-    results = await api.search_and_get_video_info(keyword=keyword,page=1)
-    
+    results = asyncio.run(api.search_and_get_video_info(keyword=keyword, page=1))
     
     print(f"共获取到 {len(results)} 个视频信息")
     
@@ -282,6 +390,3 @@ async def main():
         print(f"发布时间: {result['video']['pubdate']}")
         print(f"播放量: {result['video']['view_count']}")
         print("---------------------")
-
-if __name__ == "__main__":
-    asyncio.run(main())

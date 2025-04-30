@@ -36,6 +36,10 @@ def extract_video_info(html_content):
     for block in video_blocks:
         try:
             video = {}
+            bv_match = re.search(patterns["BV号"], block)
+            if not bv_match or not bv_match.group(1).strip():
+                continue  # 如果没有有效BV号，跳过此视频块
+
             for key, pattern in patterns.items():
                 match = re.search(pattern, block)
                 if match:
@@ -78,7 +82,7 @@ def bil_search_page(url,headers = {}) -> pd.DataFrame:
         pass
 
     # 随机生成cookie
-    cookies = random_bil_cookie.get_random_cookies()
+    cookies = random_bil_cookie.get_random_cookies(scene='search',timestamp=int(time.time()))
 
     try:
         response = requests.get(url, headers=headers, timeout=15, cookies=cookies)
@@ -113,7 +117,7 @@ def bil_search_page(url,headers = {}) -> pd.DataFrame:
                     # 提取BV号
                     a_tag = item.find('a', href=re.compile(r'/video/BV\w+'))
                     bv = re.search(r'BV\w+', a_tag['href']).group() if a_tag else "N/A"
-                    
+                        
                     # 提取标题
                     title_tag = item.find('h3', class_='bili-video-card__info--tit')
                     title = title_tag.get_text(strip=True).replace('\n', '') if title_tag else "N/A"
@@ -139,9 +143,10 @@ def bil_search_page(url,headers = {}) -> pd.DataFrame:
                 except Exception as e:
                     print(f"解析单个视频时出错: {str(e)}")
                     continue
-        
-        # 针对不同页面进行不同的处理后，我们应该有一个包含视频信息的results列表
-        return pd.DataFrame(results)
+
+        results_df = pd.DataFrame(results)
+
+        return results_df.reset_index(drop=True)
         
     except Exception as e:
         print(f"请求出错: {str(e)}")
@@ -149,7 +154,6 @@ def bil_search_page(url,headers = {}) -> pd.DataFrame:
 
 # 使用示例
 if __name__ == "__main__":
-    # search_url = "https://search.bilibili.com/all?vt=03590256&keyword=%E7%BF%81%E6%B3%95%E7%BD%97%E6%96%AF&from_source=webtop_search&spm_id_from=333.1007&search_source=3" \
     search_url = "https://search.bilibili.com/video?keyword=%E9%A3%9F%E7%89%A9%E8%AF%AD&page=1&search_source=3&order=click"
     
     video_data = bil_search_page(search_url)
