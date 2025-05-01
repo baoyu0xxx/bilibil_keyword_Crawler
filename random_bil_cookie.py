@@ -5,6 +5,7 @@ import random
 import base64
 import json
 from typing import Dict, Tuple, List, Optional, Union
+import string
 
 class BiliCookieGenerator:
     """B站Cookie生成器 - 适用于多种场景下的请求模拟"""
@@ -63,7 +64,8 @@ class BiliCookieGenerator:
     def _generate_session_data(timestamp: int) -> Dict[str, str]:
         """生成会话相关Cookie"""
         hash_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
-        extra_part = base64.b64encode(f"CjCmM5qQQNMR_DWBGg-XLiu_SQMn5NtcQEGTw0IwnXinUPdE8J9GOUkf-wh0QBrpZ2cSVmQzZzMzcWJyWUZ2WmdXYThfX2xCTzVyQWQ0c2VFV19MZk5XX3dNUmtqbXZTRTlnNFYwcndxcnpmLTE5QkczcGlaVktvQTBzM0R0UldzYjJFSlZLMU9B".encode()).decode().replace("=", "")
+        raw_str = f"{hash_id}{expiry}{random.random()}".encode()
+        extra_part = base64.b64encode(raw_str).decode().replace("=", "")[:128]
         expiry = timestamp + 15552000  # 180天
         
         # 生成JWT格式的bili_ticket
@@ -73,7 +75,9 @@ class BiliCookieGenerator:
         header_b64 = base64.b64encode(json.dumps(header).encode()).decode().rstrip("=")
         payload_b64 = base64.b64encode(json.dumps(payload).encode()).decode().rstrip("=")
         # 简化的签名
-        signature = hashlib.sha256(f"{header_b64}.{payload_b64}_bili_ticket_key".encode()).hexdigest()[:32]
+        secret_key = "bili_ticket_secret_key_placeholder"  # 应替换为真实密钥
+        signature_input = f"{header_b64}.{payload_b64}.{secret_key}".encode()
+        signature = hashlib.sha256(signature_input).hexdigest()[:43]  # 保持与JWT标准一致
         bili_ticket = f"{header_b64}.{payload_b64}.{signature}"
         
         return {
@@ -86,16 +90,21 @@ class BiliCookieGenerator:
     @staticmethod
     def _generate_user_info(user_id: str, timestamp: int) -> Dict[str, str]:
         """生成用户相关Cookie"""
+        sid_chars = string.ascii_letters + string.digits  # 包含大小写字母
         return {
             "DedeUserID": user_id,
             "DedeUserID__ckMd5": hashlib.md5(user_id.encode()).hexdigest()[:16],
-            "sid": ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8)),
+            "sid": ''.join(random.choices(sid_chars, k=10)),
             f"bp_t_offset_{user_id}": str(random.randint(10**18, 10**19-1))
         }
     
     @staticmethod
     def _generate_preferences() -> Dict[str, str]:
         """生成用户偏好相关Cookie"""
+        segment1 = "0" + ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+        segment2 = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        segment3 = ''.join(random.choices(string.ascii_lowercase, k=3))
+        fixed_suffix = "3w1TFQsQ"
         return {
             "header_theme_version": "CLOSE",
             "enable_web_push": "DISABLE",
@@ -110,18 +119,24 @@ class BiliCookieGenerator:
             "timeMachine": "0",
             "hit-dyn-v2": "1",
             "bsource": "search_bing",  # 新增字段
-            "rpdid": f"0{''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=10))}|3w1TFQsQ"  # 新增字段
+            "rpdid": f"{segment1}|{segment2}|{segment3}|{fixed_suffix}",
         }
     
     @staticmethod
     def _generate_misc(timestamp: int) -> Dict[str, str]:
         """生成杂项Cookie"""
+        timestamp_ms = int(timestamp * 1000)
+        hex_part = format(timestamp_ms, 'x').upper()  # 使用format确保无0x前缀
+
+        timestamp_part = str(timestamp)[-6:]  # 取时间戳后6位
+        random_part = ''.join(random.choices(string.digits, k=10))
+        live_buvid = f"AUTO{timestamp_part}{random_part}"
         return {
             "_uuid": f"{str(uuid.uuid4()).upper()}-{random.choice(['A', 'B', 'C', 'D'])}{timestamp}infoc",
-            "b_lsid": f"{hashlib.md5(str(timestamp).encode()).hexdigest()[:8].upper()}_{hex(int(timestamp * 1000))[2:].upper()}",
+            "b_lsid": f"{hashlib.md5(str(timestamp).encode()).hexdigest()[:8].upper()}_{hex_part}",
             "b_nut": str(timestamp),
             "PVID": "2",
-            "LIVE_BUVID": f"AUTO{timestamp*1000}"
+            "LIVE_BUVID": live_buvid,
         }
     
     def generate_cookies(self, 
