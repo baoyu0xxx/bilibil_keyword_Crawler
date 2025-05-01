@@ -1,15 +1,16 @@
 import re
-import requests
 import json
-from urllib.parse import quote
-import pandas as pd
-import hashlib
-import urllib
 import time
 import csv
-import random_bil_cookie
+import asyncio
 import random
+import hashlib
+import urllib
+import pandas as pd
+from urllib.parse import quote
 from tqdm import tqdm
+import random_bil_cookie
+import aiohttp
 
 class CommentProcessor:
     """
@@ -101,8 +102,33 @@ class CommentProcessor:
             "data": comment_data
         }
 
+async def get_response(url, headers, max_retries=3):
+    """异步获取响应+重试机制"""
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=10) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    else:
+                        print(f"请求返回状态码: {response.status}, URL: {url}")
+                        if attempt < max_retries - 1:
+                            delay = 1 * (attempt + 1)
+                            print(f"将在{delay}秒后重试...")
+                            await asyncio.sleep(delay)
+                        else:
+                            response.raise_for_status()
+        except Exception as e:
+            if attempt < max_retries - 1:
+                delay = 1 * (attempt + 1)
+                print(f"请求失败 ({attempt+1}/{max_retries}): {str(e)}, 将在{delay}秒后重试...")
+                await asyncio.sleep(delay)
+            else:
+                print(f"请求最终失败: {str(e)}")
+                raise
 
-def get_Header(cookie):
+
+def get_header(cookie):
     # cookie = cookie
 
     header = {
@@ -126,13 +152,51 @@ def get_Header(cookie):
     }
     return header
 
+async def fetch_second_comments(aid, rpid, rereply, processor, header, parent_pbar=None):
+    """异步爬取二级评论，限制并发"""
+    second_pbar = tqdm(total=rereply, desc=f"爬取ID:{rpid}的二级评论", leave=False) if parent_pbar else None
+    
+    # 计算需要的页数
+    pages = (rereply - 1) // 10 + 1
+    tasks = []
+    
+    # 分批处理，每批次不超过5个请求
+    batch_size = 5
+    for i in range(0, pages, batch_size):
+        batch_tasks = []
+        for page in range(i + 1, min(i + batch_size + 1, pages + 1)):
+            second_url = f"https://api.bilibili.com/x/v2/reply/reply?oid={aid}&type=1&root={rpid}&ps=10&pn={page}&web_location=333.788"
+            batch_tasks.append(fetch_second_page(second_url, header, processor, rpid, second_pbar))
+        
+        # 执行当前批次的任务
+        await asyncio.gather(*batch_tasks)
+        
+        # 批次间短暂暂停
+        await asyncio.sleep(0.5)
+    
+    if second_pbar:
+        second_pbar.close()
 
-# 轮页爬取
-def start(bv, aid, pageID, count, csv_writer, is_second, cookie, wts = int(time.time()), pbar=None,max_page = None,page_counter = 0):
-    # 初始化评论处理器
+async def fetch_second_page(url, header, processor, parent_id, pbar=None):
+    """获取单个二级评论页"""
+    try:
+        second_comment = await get_response(url, header)
+        
+        if not second_comment['data']['replies']:
+            return
+            
+        for second in second_comment['data']['replies']:
+            processor.process_reply(second, parent_id=second["parent"], pbar=pbar)
+    except Exception as e:
+        print(f"二级评论获取失败: {e}")
+
+async def start_async(bv, aid, pageID, count, csv_writer, is_second, cookie, wts=None, pbar=None, max_page=None, page_counter=0):
+    """异步版本的start函数"""
+    # 初始化
     processor = CommentProcessor(csv_writer)
     processor.count = count
-
+    all_tasks = []
+    
     page_counter += 1
     if max_page is not None and page_counter > max_page:
         print(f"已达到设定的最大页数限制: {max_page}页")
@@ -142,25 +206,21 @@ def start(bv, aid, pageID, count, csv_writer, is_second, cookie, wts = int(time.
     if wts is None:
         wts = int(time.time())
     
-    # 参数
+    # 参数设置
     mode = 2
     plat = 1
     type = 1
-    web_location = 1315875 
+    web_location = 1315875
 
-    # 获取当下时间戳
-    wts = int(time.time())
-
-    # 如果不是第一页
+    # 构建分页参数
     if pageID != '':
         pagination_str = json.dumps({
             "offset": json.dumps({
-                "type": 3,
+                "type": 3, 
                 "direction": 1,
                 "Data": {"cursor": int(pageID)}
             }, separators=(',', ':'))
         }, separators=(',', ':'))
-    # 如果是第一页
     else:
         pagination_str = '{"offset":""}'
 
@@ -171,65 +231,46 @@ def start(bv, aid, pageID, count, csv_writer, is_second, cookie, wts = int(time.
     w_rid = MD5.hexdigest() 
 
     url = f"https://api.bilibili.com/x/v2/reply/wbi/main?oid={aid}&type={type}&mode={mode}&pagination_str={urllib.parse.quote(pagination_str, safe=':')}&plat=1&seek_rpid=&web_location=1315875&w_rid={w_rid}&wts={wts}"
+    
     if pbar is None:
         print(f'正在请求: {url}')
     
-    header = get_Header(cookie)
+    header = get_header(cookie)
+    
     try:
-        response = requests.get(url=url, headers=header, timeout=5)
-        response.encoding = 'utf-8'
-        comment = response.text
-        comment = json.loads(comment)
+        comment = await get_response(url, header)
     except Exception as e:
-        print("请求或解码失败，原始内容如下：")
-        print(e)
-        try:
-            print("响应头：", response.headers)
-            print("接口返回内容：", response.text[:500])
-        except:
-            pass
-        return
-
+        print(f"请求或解码失败: {e}")
+        return count
+    
+    # 处理主评论
     for reply in comment['data']['replies']:
         result = processor.process_reply(reply, pbar=pbar)
         rpid = result["rpid"]
         rereply = result["rereply_count"]
 
-        # 二级评论(如果开启了二级评论爬取，且该评论回复数不为0，则爬取该评论的二级评论)
+        # 如果需要爬取二级评论
         if is_second and rereply != 0:
-            # 创建二级评论的进度条
-            with tqdm(total=rereply, desc=f"爬取ID:{rpid}的二级评论", leave=False) as second_pbar:
-                for page in range(1,rereply//10+2):
-                    second_url=f"https://api.bilibili.com/x/v2/reply/reply?oid={aid}&type=1&root={rpid}&ps=10&pn={page}&web_location=333.788"
+            # 将二级评论任务添加到任务列表
+            all_tasks.append(fetch_second_comments(aid, rpid, rereply, processor, header, pbar))
+    
+    if all_tasks:
+        await asyncio.gather(*all_tasks)
 
-                    response = requests.get(url=second_url, headers=header, timeout=10)
-                    response.encoding = response.apparent_encoding
-                    second_comment = json.loads(response.text)
-                    
-                    if not second_comment['data']['replies']:
-                        continue
-                        
-                    for second in second_comment['data']['replies']:
-                        processor.process_reply(second, parent_id=second["parent"], pbar=second_pbar)
-        
-    # 下一页的pageID
     next_pageID = comment['data']['cursor']['next']
     is_end = comment['data']['cursor']['is_end']
 
-    should_stop = (is_end == 'true' or next_pageID == '')
-
-    if should_stop:
+    if is_end == 'true' or next_pageID == '':
         print(f"评论爬取完成！总共爬取{processor.count}条。")
         return processor.count
     else:
-        # 随机等待
-        time.sleep(random.uniform(1, 2))
+        await asyncio.sleep(random.uniform(0.5, 1.5))
         if pbar is None:
-            print(f"当前爬取{count}条。")
-        start(bv, aid, next_pageID, count, csv_writer, is_second, cookie, wts, pbar, max_page ,page_counter)
+            print(f"当前爬取{processor.count}条。")
+        return await start_async(bv, aid, next_pageID, processor.count, csv_writer, is_second, cookie, wts, pbar, max_page, page_counter)
 
-
-if __name__ == "__main__":
+async def async_crawler(): # 测试用
+    """异步爬虫主函数"""
     bv = "BV1GeUUYREXy"
     aid = '113520163229242'
     title = '《崩坏：星穹铁道》黄金史诗PV：「翁法罗斯英雄纪」'
@@ -237,14 +278,20 @@ if __name__ == "__main__":
     count = 0
 
     wts = int(time.time())
-    cookie = random_bil_cookie.get_random_cookies(scene='comment', timestamp=wts,format_as_string=True)
+
+    try:
+        cookie = random_bil_cookie.get_random_cookies(scene='comment', timestamp=wts, format_as_string=True)
+    except Exception as e:
+        print(f"获取cookie失败: {e}，将使用无cookie方式访问")
+        cookie = None
+    
     is_second = False
     max_page = 5
 
     print(f"开始爬取视频 {title} (BV: {bv}) 的评论")
     
     # 创建CSV文件并写入表头
-    with open(f'{title[:12]}_评论.csv', mode='w', newline='', encoding='utf-8-sig') as file:
+    with open(f'{title[:12]}_评论_异步.csv', mode='w', newline='', encoding='utf-8-sig') as file:
         csv_writer = csv.writer(file)
         csv_writer.writerow(['序号', '上级评论ID','评论ID', '用户ID', '用户名', '用户等级', '性别', '评论内容', '评论时间', '回复数', '点赞数', '个性签名', 'IP属地', '是否是大会员', '头像'])
 
@@ -252,7 +299,10 @@ if __name__ == "__main__":
         print(f"预计评论数量: ~{estimated_total}条 (实际数量可能不同)")
         
         with tqdm(total=estimated_total, desc="爬取B站评论") as pbar:
-            final_count = start(bv, aid, next_pageID, count, csv_writer, is_second, cookie, wts, pbar, max_page=max_page, page_counter=0)
+            final_count = await start_async(bv, aid, next_pageID, count, csv_writer, is_second, cookie, wts, pbar, max_page=max_page)
             pbar.close()
             
-        print(f"爬取完成！结果已保存至 {title[:12]}_评论.csv")
+        print(f"爬取完成！结果已保存至 {title[:12]}_评论_异步.csv")
+
+if __name__ == "__main__":
+    asyncio.run(async_crawler())

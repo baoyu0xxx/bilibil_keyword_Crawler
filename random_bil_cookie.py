@@ -64,9 +64,9 @@ class BiliCookieGenerator:
     def _generate_session_data(timestamp: int) -> Dict[str, str]:
         """生成会话相关Cookie"""
         hash_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
+        expiry = timestamp + 15552000  # 180天
         raw_str = f"{hash_id}{expiry}{random.random()}".encode()
         extra_part = base64.b64encode(raw_str).decode().replace("=", "")[:128]
-        expiry = timestamp + 15552000  # 180天
         
         # 生成JWT格式的bili_ticket
         header = {"alg": "HS256", "kid": "s03", "typ": "JWT"}
