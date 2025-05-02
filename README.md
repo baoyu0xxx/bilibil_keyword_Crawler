@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-这是一个基于Python的B站视频信息与评论采集工具，可以根据关键词搜索相关视频、获取视频详情信息以及爬取视频评论。采用异步IO技术大幅提升评论爬取效率，支持视频基本信息和评论数据的导出，采用随机Cookie生成技术避免被反爬封禁。
+这是一个基于Python的B站视频信息与评论采集工具，可以根据关键词搜索相关视频、获取视频详情信息以及爬取视频评论。采用异步IO技术大幅提升评论爬取效率，支持视频基本信息和评论数据的导出，采用随机Cookie生成技术避免被反爬封禁。新增支持MySQL数据库存储功能，以及灵活的数据输出配置。
 
 ## 功能特性
 
@@ -13,6 +13,11 @@
   - 支持视频标题黑名单过滤
   - 自动获取视频详情页信息(播放量、点赞数等)
 
+- **评论采集**
+  - 支持一级评论和二级评论采集
+  - 可控制采集页数和深度
+  - 异步高效采集技术
+
 - **反爬与优化**
   - 自动生成随机Cookie和请求头
   - 随机延时请求避免触发频率限制
@@ -22,8 +27,10 @@
   - 进度条显示采集状态
 
 - **数据导出**
-  - 视频信息导出为Excel格式
-  - 评论数据导出为CSV格式（支持UTF-8编码）
+  - 支持多种格式：Excel（xlsx）和CSV
+  - 支持简洁模式与全字段模式
+  - **支持MySQL数据库存储**
+  - 评论数据CSV导出（支持UTF-8编码）
 
 ## 环境要求
 
@@ -34,112 +41,154 @@ aiohttp
 requests
 beautifulsoup4
 tqdm
+mysql-connector-python (可选，用于数据库支持)
+openpyxl (可选，用于Excel输出)
+```
+
+## 安装依赖
+
+```bash
+pip install pandas aiohttp requests beautifulsoup4 tqdm mysql-connector-python openpyxl
 ```
 
 ## 使用方法
 
-### 1. 视频信息采集
+### 1. 配置参数
 
-1. 配置搜索参数（config.py）:
+编辑 `config.py` 文件配置搜索参数和输出选项:
+
 ```python
 config = {
-    "keywords": ["关键词1", "关键词2"],  # 支持多关键词
+    # 基础搜索配置
+    "keywords": ["关键词1", "关键词2"],  # 搜索关键词列表，支持多关键词
     "keywords_blacklist": [],  # 标题黑名单
     "is_union": True,  # True为OR逻辑，False为AND逻辑
-    "file_path": "./bilibili_search.xlsx",  # 输出文件路径
-    "page": 1,  # 每个关键词搜索的页数
-    "time_begin": None,  # 起始时间，格式："2024-01-01 00:00:00"
-    "time_end": None,  # 结束时间，格式同上
+    "file_path": "./bilibili_search.csv",  # 输出文件路径
+    "page": 5,  # 每个关键词搜索的页数
+    
+    # 输出与数据库设置
+    "output_format": "csv",   # 输出格式，支持 "csv", "xlsx"
+    "output_mode": "simple",  # 输出模式，"simple"简洁版或"full"全字段版
+    "use_database": False,    # 是否使用数据库存储
+    
+    # 数据库配置 (仅当 use_database=True 时有效)
+    "db_config": {
+        "host": "localhost",
+        "port": 3306,
+        "user": "root",
+        "password": "password",
+        "database": "bilibili_data",
+        "charset": "utf8mb4"
+    }
 }
 ```
 
-2. 运行主程序：
+### 2. 命令行参数
+
+可以通过命令行参数覆盖配置文件中的设置:
+
 ```bash
-python main.py
+python main.py --keyword "搜索关键词" --max-page 3 --format xlsx --output-mode full --comments --use-db
 ```
 
-### 2. 评论数据采集
+主要参数:
+- `--keyword`: 设置搜索关键词
+- `--max-page`: 设置最大页数
+- `--format`: 输出格式，可选 "csv" 或 "xlsx"
+- `--output-mode`: 输出模式，可选 "simple" 或 "full"
+- `--comments`: 启用评论采集
+- `--use-db`: 启用数据库存储
+- `--no-db`: 禁用数据库存储
+- `--no-details`: 不获取视频详情
+- `--comments-max-page`: 设置评论最大页数
 
-配置`bil_comment_crawl.py`中的参数：
-```python
-# 获取视频bv
-bv = "BV1GeUUYREXy"
-# 获取视频oid和标题
-aid = '113520163229242'
-title = '《崩坏：星穹铁道》黄金史诗PV：「翁法罗斯英雄纪」'
-# 是否开启二级评论爬取
-is_second = True  # 设为True启用二级评论爬取
-# 最大爬取页数
-max_page = 5  # 控制爬取的评论页数
+### 3. 数据库设置
+
+如果要使用MySQL数据库存储功能，需要先创建数据库:
+
+```sql
+CREATE DATABASE bilibili_data CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-运行评论采集程序：
-```bash
-python bil_comment_crawl.py
+程序会自动创建所需的表结构。
+
+## 数据输出说明
+
+### 简洁输出模式 (simple)
+
+包含以下字段:
+- BV号: 视频的BV号
+- 标题: 视频标题
+- UP主: UP主名称
+- 分区: 视频分区和ID
+- 播放量: 播放次数
+- 弹幕数: 弹幕数量
+- 收藏、硬币、分享、点赞数
+- 发布时间
+- 简介: 视频简介
+- AV号: 视频AV号
+
+### 完整输出模式 (full)
+
+包含所有可获取的字段，包括:
+- 基本信息 (BV号、AV号、标题等)
+- 分类信息 (分区ID、分区名称等)
+- 视频描述、关键词、动态文本
+- 时间信息 (发布时间、创建时间)
+- 视频属性 (时长、分P数等)
+- 版权信息
+- 统计数据 (播放量、弹幕数等详细统计)
+- UP主详细信息
+- 分P信息 (JSON格式)
+- 荣誉信息 (JSON格式)
+
+### 数据库表结构
+
+使用数据库存储时，程序会创建以下表:
+
+1. **bili_videos**: 存储视频信息
+2. **bili_owners**: 存储UP主信息
+3. **bili_comments**: 存储评论数据
+
+## 示例SQL查询
+
+```sql
+-- 获取播放量前10的视频
+SELECT title, view_count, owner_mid, pubdate
+FROM bili_videos
+ORDER BY view_count DESC
+LIMIT 10;
+
+-- 获取特定UP主的视频统计
+SELECT o.name, COUNT(*) as video_count, 
+       SUM(v.view_count) as total_views, 
+       AVG(v.like_count) as avg_likes
+FROM bili_videos v
+JOIN bili_owners o ON v.owner_mid = o.mid
+GROUP BY v.owner_mid
+ORDER BY total_views DESC;
+
+-- 统计评论数量最多的视频
+SELECT v.title, COUNT(c.id) as comment_count
+FROM bili_videos v
+JOIN bili_comments c ON v.bvid = c.bvid
+GROUP BY v.bvid
+ORDER BY comment_count DESC
+LIMIT 10;
 ```
 
 ## 项目结构
 
 ```
-├── main.py                # 主程序入口(视频搜索)
+├── main.py                # 主程序入口
 ├── config.py              # 配置文件
 ├── bilibili_api.py        # B站API接口封装
 ├── bil_search_page.py     # 搜索页面解析
 ├── bil_comment_crawl.py   # 评论采集模块(异步实现)
 ├── random_bil_cookie.py   # Cookie生成工具
+├── db_handler.py          # 数据库处理模块(新增)
 └── test_effiency.ipynb    # 效率测试模块
 ```
-
-## 功能说明
-
-### 视频信息采集
-
-从B站搜索页面获取视频列表，然后访问每个视频的详情页获取完整的视频信息，包括：
-- 视频标题、BV号、AV号
-- 视频发布时间、播放量、弹幕数
-- 点赞数、收藏数、分享数、硬币数
-- UP主信息、视频简介
-- 视频分区、标签
-
-### 评论采集
-
-通过B站评论API异步获取视频下的评论数据，包括：
-- 评论内容、评论ID、上级评论ID(回复关系)
-- 用户信息(ID、用户名、等级、性别)
-- 评论时间、点赞数、回复数
-- 用户头像、个性签名、IP属地
-- 用户大会员状态
-
-
-### 数据清洗
-
-- 处理HTML标签和转义字符
-- 去重处理重复数据
-- 规范化时间格式
-- 处理异常字段和缺失值
-
-
-## 开发计划
-
-1. **评论区数据分析**
-   - 支持评论内容情感分析
-   - 用户画像生成
-   - 热门评论话题提取
-
-2. **数据存储优化**
-   - 将数据存储迁移至SQL数据库
-   - 设计合理的数据库结构
-   - 实现增量更新机制
-
-3. **采集能力扩展**
-   - 添加用户关注关系采集
-   - 支持弹幕内容获取
-   - 添加视频下载功能
-
-## 已知问题
-
-- B站限制了搜索结果最大页数(约34页)
-- 某些情况下评论API会返回错误数据，导致迭代提前终止
 
 ## 免责声明
 

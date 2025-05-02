@@ -4,7 +4,7 @@ config = {
     "keywords_blacklist": [],  # 视频标题黑名单，含有这些词的视频将被过滤
     "tids": "",               # 分区ID，空字符串表示全部分区
     "is_union": True,         # True表示OR逻辑(并集)，False表示AND逻辑(交集)
-    "file_path": "./bilibili_search.xlsx",  # 搜索结果保存路径
+    "file_path": "./bilibili_search.csv",  # 搜索结果保存路径
     "page": 5,               # 每关键词搜索页数(B站限制了搜索页数)
     
     # 时间范围筛选
@@ -38,7 +38,25 @@ config = {
     # 输出与日志设置
     "show_progress": True,    # 是否显示进度条
     "verbose": True,          # 是否显示详细信息
+    "output_format": "csv",   # 输出格式，支持 "csv", "xlsx"
+    "output_mode": "simple",  # 输出模式，"simple"简洁版或"full"全字段版
     
     # 高级选项
     "raw_data_dir": "./raw_data",  # 原始数据保存目录
+    
+    # 数据库配置
+    "use_database": False,    # 是否使用数据库存储
+    "db_config": {
+        "host": "localhost",
+        "port": 3306,
+        "user": "root",
+        "password": "password",
+        "database": "bilibili_data",
+        "charset": "utf8mb4"
+    },
+    "db_tables": {
+        "videos": "bili_videos",      # 视频信息表名
+        "owners": "bili_owners",      # UP主信息表名
+        "comments": "bili_comments"   # 评论信息表名
+    }
 }
