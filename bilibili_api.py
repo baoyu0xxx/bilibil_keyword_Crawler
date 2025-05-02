@@ -132,16 +132,18 @@ class BilibiliAPI:
             if bvid not in unique_videos:
                 unique_videos[bvid] = video
         
-        print(f"搜索完成，共获取 {len(unique_videos)} 个视频")
         return list(unique_videos.values())
 
-    async def get_videos_detail(self, videos, max_concurrent=3) -> List[Dict]:
+    # ...existing code...
+    
+    async def get_videos_detail(self, videos, max_concurrent=3, show_progress=True) -> List[Dict]:
         """
         根据基本视频信息获取详细信息
         
         参数:
             videos: 包含基本信息的视频列表
             max_concurrent: 最大并发请求数
+            show_progress: 是否显示进度条
         
         返回:
             包含详细信息的视频列表
@@ -149,6 +151,7 @@ class BilibiliAPI:
         detailed_videos = []
         failed_videos = []
         
+        # 创建信号量限制并发请求数
         semaphore = asyncio.Semaphore(max_concurrent)
         
         async def fetch_video_detail(video):
@@ -157,9 +160,11 @@ class BilibiliAPI:
                 try:
                     # 构建视频页面URL
                     video_url = f"https://{self.main_host}/video/{bv_id}"
+                    
+                    # 获取视频页面HTML
                     html_content = await self._get_html(video_url)
                     
-                    # 解析
+                    # 解析视频详细信息
                     video_data = self._parse_video_html(html_content)
                     
                     if video_data:
@@ -171,15 +176,21 @@ class BilibiliAPI:
         
         # 第一轮：视频详情
         total_videos = len(videos)
-        print(f"开始获取 {total_videos} 个视频的详细信息...")
+        if show_progress:
+            print(f"开始获取 {total_videos} 个视频的详细信息...")
+        
+        # 创建任务
         tasks = []
         
-        # 使用 tqdm 显示任务进度
-        for video in tqdm(videos, desc="创建详情获取任务"):
-            tasks.append(fetch_video_detail(video))
+        if show_progress:
+            for video in tqdm(videos, desc="创建详情获取任务"):
+                tasks.append(fetch_video_detail(video))
+            print("等待详细信息获取任务完成...")
+        else:
+            for video in videos:
+                tasks.append(fetch_video_detail(video))
         
         # 等待所有任务完成
-        print("等待详细信息获取任务完成...")
         results = await asyncio.gather(*tasks)
         
         # 处理结果
@@ -191,35 +202,60 @@ class BilibiliAPI:
         
         # 第二轮：重试失败的视频
         if failed_videos:
-            print(f"第一轮获取后有 {len(failed_videos)} 个视频需要重试...")
+            if show_progress:
+                print(f"第一轮获取后有 {len(failed_videos)} 个视频需要重试...")
+            
             random.shuffle(failed_videos)  # 随机打乱顺序
             
             retry_results = []
-            for video, error in tqdm(failed_videos, desc="重试获取"):
-                bv_id = video["video"]["bvid"]
-                try:
-                    # 使用不同的cookie重试
-                    video_url = f"https://{self.main_host}/video/{bv_id}"
-                    html_content = await self._get_html(
-                        video_url, 
-                        cookie=random_bil_cookie.get_random_cookies(scene='search', timestamp=int(time.time()))
-                    )
+            
+            if show_progress:
+                for video, error in tqdm(failed_videos, desc="重试获取"):
+                    # ...重试逻辑...
+                    bv_id = video["video"]["bvid"]
+                    try:
+                        video_url = f"https://{self.main_host}/video/{bv_id}"
+                        html_content = await self._get_html(
+                            video_url, 
+                            cookie=random_bil_cookie.get_random_cookies(scene='search', timestamp=int(time.time()))
+                        )
+                        
+                        video_data = self._parse_video_html(html_content)
+                        if video_data:
+                            retry_results.append(video_data)
+                        else:
+                            retry_results.append(video)
+                    except Exception:
+                        retry_results.append(video)
                     
-                    video_data = self._parse_video_html(html_content)
-                    if video_data:
-                        retry_results.append(video_data)
-                    else:
-                        retry_results.append(video)  # 保留原始基本信息
-                except Exception:
-                    retry_results.append(video)  # 保留原始基本信息
-                
-                # 增加等待时间
-                await asyncio.sleep(random.uniform(0.8, 1.5))
+                    await asyncio.sleep(random.uniform(0.8, 1.4))
+            else:
+                for video, error in failed_videos:
+                    # ...重试逻辑...
+                    bv_id = video["video"]["bvid"]
+                    try:
+                        video_url = f"https://{self.main_host}/video/{bv_id}"
+                        html_content = await self._get_html(
+                            video_url, 
+                            cookie=random_bil_cookie.get_random_cookies(scene='search', timestamp=int(time.time()))
+                        )
+                        
+                        video_data = self._parse_video_html(html_content)
+                        if video_data:
+                            retry_results.append(video_data)
+                        else:
+                            retry_results.append(video)
+                    except Exception:
+                        retry_results.append(video)
+                    
+                    await asyncio.sleep(random.uniform(0.8, 1.4))
             
             # 添加重试成功的视频
             detailed_videos.extend(retry_results)
         
-        print(f"详细信息获取完成，共 {len(detailed_videos)} 个视频")
+        if show_progress:
+            print(f"详细信息获取完成，共 {len(detailed_videos)} 个视频")
+        
         return detailed_videos
 
     async def search_and_get_video_info(self, keyword, time_begin=None, time_end=None, page=1) -> List[Dict]:

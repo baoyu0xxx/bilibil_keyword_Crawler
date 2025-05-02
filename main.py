@@ -7,7 +7,6 @@ import os
 from bil_comment_crawl import start_async as crawl_comments
 import csv
 import logging
-import sys
 import time
 import random
 from tqdm import tqdm
@@ -60,23 +59,20 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
     keywords_combined = mix_keywords(config["keywords"])
     print(f"关键词数量: {len(keywords_combined)}, 每关键词页数: {config['page']}")
     
-    all_results = []
-    actual_pages = min(config.get('page', 1), max_page)
-
     # 第一步：获取视频基本信息
-    print("=== 第一阶段：获取视频基本信息 ===")
+    print("\n=== 第一阶段：获取视频基本信息 ===")
     all_videos = []
     actual_pages = min(config.get('page', 1), max_page)
     
-    # 使用 tqdm 显示关键词处理进度
-    for idx, keyword in enumerate(tqdm(keywords_combined, desc="关键词进度")):
-        print(f"处理关键词 [{idx+1}/{len(keywords_combined)}]: {keyword}")
+    keyword_pbar = tqdm(keywords_combined, desc="关键词进度", position=0)
+    for idx, keyword in enumerate(keyword_pbar):
+        keyword_pbar.set_description(f"处理关键词 [{idx+1}/{len(keywords_combined)}]: {keyword}")
         pages_list = list(range(1, actual_pages + 1))
         
         try:
-            # 使用 tqdm 显示页面获取进度
             videos_for_keyword = []
-            for page in tqdm(pages_list, desc=f"关键词'{keyword}'的页面进度", leave=False):
+            for page in pages_list:
+                keyword_pbar.set_postfix({"页面": f"{page}/{actual_pages}"})
                 page_videos = await api.search_videos(
                     keyword=keyword,
                     time_begin=config.get("time_begin", None),
@@ -84,7 +80,7 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
                     pages=[page]  # 每次请求一页
                 )
                 videos_for_keyword.extend(page_videos)
-                await asyncio.sleep(random.uniform(0.3, 0.8))  # 添加随机延迟
+                await asyncio.sleep(random.uniform(0.3, 0.8))
             
             # 数据清洗和黑名单过滤
             filtered = []
@@ -122,27 +118,37 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
         batch_size = 20
         total_batches = (len(basic_results) + batch_size - 1) // batch_size
         
+        # 单层进度条显示批次处理进度
+        batch_pbar = tqdm(total=total_batches, desc="详细信息批次处理", position=0)
+        
         processed_videos = []
-        for i in tqdm(range(total_batches), desc="详细信息批次处理"):
+        for i in range(total_batches):
             start_idx = i * batch_size
             end_idx = min((i + 1) * batch_size, len(basic_results))
             batch = basic_results[start_idx:end_idx]
             
+            batch_pbar.set_description(f"批次 {i+1}/{total_batches} ({start_idx+1}-{end_idx}/{len(basic_results)})")
+            
             # 获取这一批次的视频详情
-            batch_results = await api.get_videos_detail(batch)
+            batch_results = await api.get_videos_detail(batch, show_progress=False)  # 在API中禁用进度条
             processed_videos.extend(batch_results)
+            
+            # 更新进度条
+            batch_pbar.update(1)
             
             # 添加批次间的延迟
             if i < total_batches - 1:  # 不是最后一批
                 await asyncio.sleep(random.uniform(0.4, 1.2))
         
+        batch_pbar.close()
         detailed_results = processed_videos
     else:
         detailed_results = basic_results
     
     # 处理结果并保存到Excel
+    print("\n正在处理结果并保存到Excel...")
     rows = []
-    for video in detailed_results:
+    for video in tqdm(detailed_results, desc="处理数据", position=0):
         stat = video["video"]
         rows.append({
             "BV号": stat["bvid"],
@@ -174,13 +180,15 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
         comments_dir = os.path.join(os.path.dirname(config["file_path"]), "comments")
         os.makedirs(comments_dir, exist_ok=True)
         
-        # 使用tqdm显示进度
-        for i, video in enumerate(tqdm(rows, desc="评论爬取")):
+        # 使用单层进度条
+        comment_pbar = tqdm(total=len(rows), desc="评论爬取", position=0)
+        
+        for i, video in enumerate(rows):
             bvid = video["BV号"]
             aid = video["AV号"]
             title = video["标题"]
             
-            print(f"\n[{i+1}/{len(rows)}] 正在获取视频评论: {title} (BV: {bvid})")
+            comment_pbar.set_description(f"视频 {i+1}/{len(rows)}: {title[:15]}...")
             
             # 创建评论CSV文件
             csv_path = os.path.join(comments_dir, f"{bvid}_comments.csv")
@@ -199,13 +207,17 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
                     await crawl_comments(bvid, aid, next_pageID, count, csv_writer, 
                                 is_second, cookie, None, None, max_page=comments_max_page, page_counter=0)
                     
-                    print(f"评论已保存至: {csv_path}")
                 except Exception as e:
                     print(f"获取评论失败: {str(e)}")
                     traceback.print_exc()
             
+            # 更新进度条
+            comment_pbar.update(1)
+            
             # 添加随机延迟
-            await asyncio.sleep(random.uniform(0.6, 1.8))
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+        
+        comment_pbar.close()
 
 if __name__ == "__main__":
     # 默认参数
