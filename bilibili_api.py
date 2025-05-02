@@ -21,7 +21,6 @@ class BilibiliAPI:
         self.api_prefix = "/x"
         self.cookie = random_bil_cookie.get_random_cookies(scene='search',timestamp=int(time.time()))
 
-    
     async def _get_html(self, url, referer="https://www.bilibili.com",cookie=None) -> str:
         """获取网页 HTML 内容"""
         headers = {
@@ -54,131 +53,204 @@ class BilibiliAPI:
                     raise Exception(f"HTTP Error: {response.status}")
                 return await response.text()
     
-    async def search_and_get_video_info(self, keyword, time_begin = None, time_end = None, page=1,) -> List[Dict]:
+    async def search_videos(self, keyword, time_begin=None, time_end=None, pages=None) -> List[Dict]:
         """
-        根据关键词搜索视频并获取详细信息
-        返回符合数据库结构的格式化结果
+        搜索视频获取基本信息，支持多页同时搜索
+        
+        参数:
+            keyword: 关键词
+            time_begin: 开始时间
+            time_end: 结束时间
+            pages: 页码列表，默认为[1]
+        
+        返回:
+            包含基本视频信息的字典列表
         """
+        if pages is None:
+            pages = [1]
+        elif isinstance(pages, int):
+            pages = [pages]
+            
+        all_video_data = []
         
-        # 构建搜索URL - 使用quote确保中文关键词正确编码
-        encoded_keyword = quote(keyword)
-        search_url = f"https://{self.search_host}/video?keyword={encoded_keyword}&from_source=webtop_search&page={page}&search_source=3&order=click"
-        
-        # time_begin 和 time_end 是 日期格式，并且必须同时存在
-        if time_begin or time_end:
-            if not time_begin or not time_end:
-                raise ValueError("time_begin 和 time_end 必须同时存在")
-            # 将时间转换为时间戳
+        for page in pages:
+            # 构建搜索URL
+            encoded_keyword = quote(keyword)
+            search_url = f"https://{self.search_host}/video?keyword={encoded_keyword}&from_source=webtop_search&page={page}&search_source=3&order=click"
+            
+            # time_begin 和 time_end 是日期格式，并且必须同时存在
+            if time_begin or time_end:
+                if not time_begin or not time_end:
+                    raise ValueError("time_begin 和 time_end 必须同时存在")
+                # 将时间转换为时间戳
+                try:
+                    time_begin_ts = int(time.mktime(time.strptime(time_begin, "%Y-%m-%d %H:%M:%S")))
+                    time_end_ts = int(time.mktime(time.strptime(time_end, "%Y-%m-%d %H:%M:%S")))
+                    search_url += f"&pubtime_begin_s={time_begin_ts}&pubtime_end_s={time_end_ts}"
+                except ValueError as e:
+                    raise ValueError(f"时间格式错误: {e}")
+            
+            # 使用bil_search_page获取搜索结果
             try:
-                time_begin = int(time.mktime(time.strptime(time_begin, "%Y-%m-%d %H:%M:%S")))
-                time_end = int(time.mktime(time.strptime(time_end, "%Y-%m-%d %H:%M:%S")))
+                video_df = bil_search_page(search_url)
+                video_df = video_df.dropna(subset=['BV号'])
+                video_df = video_df.drop_duplicates(subset=['BV号'], keep='first')
+                
+                if isinstance(video_df, pd.DataFrame) and not video_df.empty:
+                    for _, video in video_df.iterrows():
+                        # 基本信息
+                        basic_info = {
+                            "video": {
+                                "bvid": video['BV号'],
+                                "title": video.get('标题', ''),
+                                "view_count": self._parse_view_count(video.get('播放量', '0')),
+                                "pubdate": video.get('发布时间', ''),
+                                "duration": video.get('时长', ''),
+                                "description": video.get('视频介绍', ''),
+                                "aid": 0,  # 初始值，详细信息获取时会更新
+                                "_from_search": True,
+                                "_search_keyword": keyword,
+                                "_search_page": page
+                            },
+                            "owner": {
+                                "name": video.get('作者', video.get('UP主', '')),
+                                "mid": 0
+                            }
+                        }
+                        all_video_data.append(basic_info)
+                
+                await asyncio.sleep(random.uniform(0.5, 1.5))
+                
+            except Exception as e:
+                print(f"搜索页 {page} 处理失败: {str(e)}")
+                continue
+        
+        # 去重（基于BV号）
+        unique_videos = {}
+        for video in all_video_data:
+            bvid = video["video"]["bvid"]
+            if bvid not in unique_videos:
+                unique_videos[bvid] = video
+        
+        print(f"搜索完成，共获取 {len(unique_videos)} 个视频")
+        return list(unique_videos.values())
 
-                search_url += f"&pubtime_begin_s={time_begin}&pubtime_end_s={time_end}"
-            except ValueError as e:
-                raise ValueError(f"时间格式错误: {e}")
+    async def get_videos_detail(self, videos, max_concurrent=3) -> List[Dict]:
+        """
+        根据基本视频信息获取详细信息
         
-        # 使用bil_search_page获取搜索结果
-        video_df = bil_search_page(search_url)
-        # 去重并删除空值
-        video_df = video_df.dropna(subset=['BV号'])
-        video_df = video_df.drop_duplicates(subset=['BV号'], keep='first')
+        参数:
+            videos: 包含基本信息的视频列表
+            max_concurrent: 最大并发请求数
         
-        # 正确处理DataFrame返回值
-        if isinstance(video_df, pd.DataFrame):
-            if video_df.empty:
-                print(f"未找到与关键词 '{keyword}' 相关的视频")
-                return []
-        else:
-            # 如果返回的不是DataFrame（可能是空列表）
-            print(f"搜索结果格式不正确或为空: {type(video_df)}")
-            return []
-        
-        # 结果存储
-        results = []
+        返回:
+            包含详细信息的视频列表
+        """
+        detailed_videos = []
         failed_videos = []
         
-        # 对每个BV号获取详细信息
-        total_videos = len(video_df)
-        with tqdm(total=total_videos, desc="第一轮获取视频信息") as pbar:
-            for _, video in video_df.iterrows():
-                bv_id = video['BV号']
-                
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def fetch_video_detail(video):
+            async with semaphore:
+                bv_id = video["video"]["bvid"]
                 try:
                     # 构建视频页面URL
                     video_url = f"https://{self.main_host}/video/{bv_id}"
-                    
-                    # 获取视频页面HTML
                     html_content = await self._get_html(video_url)
                     
                     # 解析
                     video_data = self._parse_video_html(html_content)
                     
                     if video_data:
-                        results.append(video_data)
-                        pbar.set_postfix({"状态": "成功"})
+                        return video_data, None
                     else:
-                        # 解析失败，添加到失败列表
-                        failed_videos.append((bv_id, video))
-                        pbar.set_postfix({"状态": "解析失败"})
-                
+                        return video, "解析失败"
                 except Exception as e:
-                    # 请求失败，添加到失败列表
-                    failed_videos.append((bv_id, video))
-                    pbar.set_postfix({"状态": f"错误: {str(e)[:20]}..."})
-                
-                pbar.update(1)
-                # 添加随机延迟，避免请求过于频繁
-                await asyncio.sleep(0.3 + 0.4 * random.random())
+                    return video, str(e)
         
-        # 如果有失败的，进行第二轮尝试
+        # 第一轮：视频详情
+        total_videos = len(videos)
+        print(f"开始获取 {total_videos} 个视频的详细信息...")
+        tasks = []
+        
+        # 使用 tqdm 显示任务进度
+        for video in tqdm(videos, desc="创建详情获取任务"):
+            tasks.append(fetch_video_detail(video))
+        
+        # 等待所有任务完成
+        print("等待详细信息获取任务完成...")
+        results = await asyncio.gather(*tasks)
+        
+        # 处理结果
+        for video_data, error in results:
+            if error is None:
+                detailed_videos.append(video_data)
+            else:
+                failed_videos.append((video_data, error))
+        
+        # 第二轮：重试失败的视频
         if failed_videos:
-            print(f"\n第一轮处理后，有 {len(failed_videos)} 个视频需要重新尝试获取...")
-            # 随机打乱顺序，减少连续请求同一资源的概率
-            random.shuffle(failed_videos)
+            print(f"第一轮获取后有 {len(failed_videos)} 个视频需要重试...")
+            random.shuffle(failed_videos)  # 随机打乱顺序
             
-            # 第二轮：集中处理之前失败的视频
-            with tqdm(total=len(failed_videos), desc="第二轮重试获取视频") as pbar:
-                for bv_id, video in failed_videos:
-                    try:
-                        # 更新进度条描述
-                        pbar.set_description(f"重试 {bv_id}")
-                        
-                        # 构建视频页面URL
-                        video_url = f"https://{self.main_host}/video/{bv_id}"
-                        
-                        # 获取视频页面HTML - 使用不同的cookie进行尝试
-                        html_content = await self._get_html(
-                            video_url,
-                            cookie=random_bil_cookie.get_random_cookies(scene='search',timestamp=int(time.time()))
-                        )
-                        
-                        # 解析
-                        video_data = self._parse_video_html(html_content)
-                        
-                        if video_data:
-                            results.append(video_data)
-                            pbar.set_postfix({"状态": "成功"})
-                        else:
-                            # 解析仍然失败，添加基本信息
-                            basic_info = self._create_basic_info(bv_id, video)
-                            results.append(basic_info)
-                            pbar.set_postfix({"状态": "解析失败，使用基本信息"})
+            retry_results = []
+            for video, error in tqdm(failed_videos, desc="重试获取"):
+                bv_id = video["video"]["bvid"]
+                try:
+                    # 使用不同的cookie重试
+                    video_url = f"https://{self.main_host}/video/{bv_id}"
+                    html_content = await self._get_html(
+                        video_url, 
+                        cookie=random_bil_cookie.get_random_cookies(scene='search', timestamp=int(time.time()))
+                    )
                     
-                    except Exception as e:
-                        # 二次尝试仍然失败，添加基本信息
-                        basic_info = self._create_basic_info(bv_id, video)
-                        results.append(basic_info)
-                        pbar.set_postfix({"状态": f"最终失败: {str(e)[:20]}..."})
-                    
-                    pbar.update(1)
-                    # 增加等待时间避免被限流
-                    await asyncio.sleep(0.5 + 1.0 * random.random())
+                    video_data = self._parse_video_html(html_content)
+                    if video_data:
+                        retry_results.append(video_data)
+                    else:
+                        retry_results.append(video)  # 保留原始基本信息
+                except Exception:
+                    retry_results.append(video)  # 保留原始基本信息
+                
+                # 增加等待时间
+                await asyncio.sleep(random.uniform(0.8, 1.5))
+            
+            # 添加重试成功的视频
+            detailed_videos.extend(retry_results)
         
-        # 输出最终统计
-        success_count = sum(1 for r in results if not r['video'].get('_error'))
-        print(f"\n处理完成: {success_count}/{len(results)} 个视频信息获取成功")
+        print(f"详细信息获取完成，共 {len(detailed_videos)} 个视频")
+        return detailed_videos
+
+    async def search_and_get_video_info(self, keyword, time_begin=None, time_end=None, page=1) -> List[Dict]:
+        """
+        根据关键词搜索视频并获取详细信息（兼容旧版接口）
+        """
+        # 基本信息
+        basic_videos = await self.search_videos(keyword, time_begin, time_end, [page])
         
-        return results
+        # 详细信息
+        detailed_videos = await self.get_videos_detail(basic_videos)
+        
+        return detailed_videos
+    
+    def _parse_view_count(self, view_str):
+        """解析播放量字符串为数字"""
+        if not view_str or view_str == 'N/A':
+            return 0
+            
+        view_str = str(view_str)
+        if '万' in view_str:
+            view_str = view_str.replace('万', '')
+            try:
+                return float(view_str) * 10000
+            except ValueError:
+                return 0
+        else:
+            try:
+                return int(view_str.replace(',', ''))
+            except ValueError:
+                return 0
     
     def _parse_video_html(self, html_content) -> Dict[str, Any]:
         """
