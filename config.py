@@ -5,11 +5,12 @@ config = {
     "tids": "",               # 分区ID，空字符串表示全部分区
     "is_union": True,         # True表示OR逻辑(并集)，False表示AND逻辑(交集)
     "file_path": "./bilibili_search.csv",  # 搜索结果保存路径
-    "page": 5,               # 每关键词搜索页数(B站限制了搜索页数)
+    "page": 30,               # 每关键词搜索页数(B站限制了搜索页数)
     
     # 时间范围筛选
     "time_begin": None,       # 起始时间，如 "2024-01-01 00:00:00"
     "time_end": None,         # 结束时间，如 "2024-06-01 23:59:59"
+    "recent_hot_days": 7,     # 热门视频时间范围(天)，0表示不启用，此设置会覆盖time_begin/time_end
     
     # 评论采集配置
     "fetch_comments": False,  # 是否采集视频评论
@@ -21,7 +22,7 @@ config = {
     # 异步爬取配置
     "max_concurrency": 10,    # 最大并发请求数
     "batch_size": 5,          # 批处理大小(每批次请求数)
-    "retry_times": 3,         # 请求失败重试次数
+    "retry_times": 2,         # 请求失败重试次数
     "delay_min": 0.5,         # 请求间隔最小延迟(秒)
     "delay_max": 1.5,         # 请求间隔最大延迟(秒)
     
@@ -39,19 +40,19 @@ config = {
     "show_progress": True,    # 是否显示进度条
     "verbose": True,          # 是否显示详细信息
     "output_format": "csv",   # 输出格式，支持 "csv", "xlsx"
-    "output_mode": "simple",  # 输出模式，"simple"简洁版或"full"全字段版
+    "output_mode": "full",  # 输出模式，"simple"简洁版或"full"全字段版
     
     # 高级选项
     "raw_data_dir": "./raw_data",  # 原始数据保存目录
     
     # 数据库配置
-    "use_database": False,    # 是否使用数据库存储
+    "use_database": True,    # 是否使用数据库存储
     "db_config": {
         "host": "localhost",
         "port": 3306,
         "user": "root",
-        "password": "password",
-        "database": "bilibili_data",
+        "password": "@13219488392Bao",
+        "database": "bil_crawl_honkai",
         "charset": "utf8mb4"
     },
     "db_tables": {

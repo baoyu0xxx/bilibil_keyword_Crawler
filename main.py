@@ -16,6 +16,7 @@ import sys
 import argparse
 import json
 from typing import List, Dict, Any
+from datetime import datetime, timedelta
 
 # 引入工具函数
 from crawl_utils import (
@@ -33,7 +34,7 @@ except ImportError:
 
 # ------------ 主流程 ------------
 async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_max_page=None,
-               output_format=None, output_mode=None, use_database=None):
+               output_format=None, output_mode=None, use_database=None, recent_days=None):
     # 使用参数覆盖配置
     if output_format is not None:
         config["output_format"] = output_format
@@ -42,6 +43,28 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
     if use_database is not None:
         config["use_database"] = use_database
     
+    # 处理时间范围参数
+    if recent_days is not None:
+        # 如果指定了最近天数，则覆盖time_begin和time_end
+        now = datetime.now()
+        time_end = now.strftime("%Y-%m-%d %H:%M:%S")
+        time_begin = (now - timedelta(days=recent_days)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 更新配置
+        config["time_begin"] = time_begin
+        config["time_end"] = time_end
+        print(f"已设置筛选最近 {recent_days} 天的热门视频 ({time_begin} 至 {time_end})")
+    elif config.get("recent_hot_days"):
+        # 如果配置文件中有recent_hot_days，但命令行没有指定
+        recent_days = config.get("recent_hot_days")
+        now = datetime.now()
+        time_end = now.strftime("%Y-%m-%d %H:%M:%S")
+        time_begin = (now - timedelta(days=recent_days)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 更新配置
+        config["time_begin"] = time_begin
+        config["time_end"] = time_end
+        print(f"已设置筛选最近 {recent_days} 天的热门视频 ({time_begin} 至 {time_end})")
     
     api = BilibiliAPI()
     keywords_combined = mix_keywords(config["keywords"], config["is_union"])
@@ -59,6 +82,7 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
     print("\n=== 第一阶段：获取视频基本信息 ===")
     all_videos = []
     actual_pages = min(config.get('page', 1), max_page)
+    recent_days_value = recent_days if recent_days is not None else config.get("recent_days")
     
     keyword_pbar = tqdm(keywords_combined, desc="关键词进度", position=0)
     for idx, keyword in enumerate(keyword_pbar):
@@ -66,17 +90,22 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
         pages_list = list(range(1, actual_pages + 1))
         
         try:
-            videos_for_keyword = []
-            for page in pages_list:
-                keyword_pbar.set_postfix({"页面": f"{page}/{actual_pages}"})
-                page_videos = await api.search_videos(
+            # 传递近期日期参数给API
+            if recent_days_value:
+                print(f"按最近 {recent_days_value} 天逐日搜索: {keyword}")
+                videos_for_keyword = await api.search_videos(
+                    keyword=keyword,
+                    pages=range(1, actual_pages + 1),
+                    recent_days=recent_days_value
+                )
+            else:
+                # 原有的时间范围搜索
+                videos_for_keyword = await api.search_videos(
                     keyword=keyword,
                     time_begin=config.get("time_begin", None),
                     time_end=config.get("time_end", None),
-                    pages=[page] 
+                    pages=range(1, actual_pages + 1)
                 )
-                videos_for_keyword.extend(page_videos)
-                await asyncio.sleep(random.uniform(0.3, 0.8))
             
             # 数据清洗和黑名单过滤
             filtered = []
@@ -150,20 +179,21 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
         print("使用简洁输出模式")
         rows = [prepare_simple_video_data(video) for video in tqdm(detailed_results, desc="处理数据")]
     
-    df = pd.DataFrame(rows)
-
+    # 设置输出文件名，添加时间范围信息
     file_path = config["file_path"]
     file_base, file_ext = os.path.splitext(file_path)
-
+    
     if config["output_format"] == "xlsx":
         output_path = f"{file_base}.xlsx" if file_ext != ".xlsx" else file_path
         try:
+            df = pd.DataFrame(rows)
             df.to_excel(output_path, index=False)
             print(f"数据已保存到Excel文件: {output_path}")
         except Exception as e:
             print(f"保存Excel失败: {str(e)}")
             try:
                 csv_path = f"{file_base}.csv"
+                df = pd.DataFrame(rows)
                 df.to_csv(csv_path, index=False, encoding='utf-8-sig')
                 print(f"已备选保存为CSV文件: {csv_path}")
             except Exception as csv_e:
@@ -172,6 +202,7 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
         # 默认CSV格式
         output_path = f"{file_base}.csv" if file_ext != ".csv" else file_path
         try:
+            df = pd.DataFrame(rows)
             df.to_csv(output_path, index=False, encoding='utf-8-sig')
             print(f"数据已保存到CSV文件: {output_path}")
         except Exception as e:
@@ -272,12 +303,18 @@ def parse_args():
     parser.add_argument("--use-db", action="store_true", help="保存到MySQL数据库")
     parser.add_argument("--no-db", action="store_false", dest="use_db", help="不保存到数据库")
     parser.add_argument("--keyword", type=str, default=None, help="搜索关键词，覆盖config中的设置")
+    parser.add_argument("--recent-days", type=int, default=None, 
+                        help="筛选最近N天的热门视频(按播放量排序)，如--recent-days 7表示最近一周")
     
     args = parser.parse_args()
     
     # 如果指定了关键词，更新配置
     if args.keyword:
         config["keywords"] = [args.keyword]
+    
+    # 检查时间范围参数互斥性
+    if args.recent_days is not None and (config.get("time_begin") or config.get("time_end")):
+        print("警告: 同时指定了--recent-days和time_begin/time_end，将使用--recent-days的值")
     
     return args
 
@@ -293,6 +330,7 @@ if __name__ == "__main__":
     output_format = args.format
     output_mode = args.output_mode
     use_database = args.use_db if args.use_db is not None else config.get("use_database", False)
+    recent_days = args.recent_days
     
     # 运行主程序
     result = asyncio.run(main(
@@ -302,7 +340,8 @@ if __name__ == "__main__":
         comments_max_page=comments_max_page,
         output_format=output_format,
         output_mode=output_mode,
-        use_database=use_database
+        use_database=use_database,
+        recent_days=recent_days
     ))
     
     print(f"\n任务统计:")

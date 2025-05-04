@@ -11,6 +11,7 @@ import pandas as pd
 import random
 import random_bil_cookie
 from tqdm import tqdm
+from datetime import datetime, timedelta
 
 
 class BilibiliAPI:
@@ -53,7 +54,7 @@ class BilibiliAPI:
                     raise Exception(f"HTTP Error: {response.status}")
                 return await response.text()
     
-    async def search_videos(self, keyword, time_begin=None, time_end=None, pages=None) -> List[Dict]:
+    async def search_videos(self, keyword, time_begin=None, time_end=None, pages=None, recent_days=None) -> List[Dict]:
         """
         搜索视频获取基本信息，支持多页同时搜索
         
@@ -62,68 +63,160 @@ class BilibiliAPI:
             time_begin: 开始时间
             time_end: 结束时间
             pages: 页码列表，默认为[1]
+            recent_days: 最近几天，如果设置，将按天搜索
         
         返回:
             包含基本视频信息的字典列表
         """
         if pages is None:
             pages = [1]
+        elif recent_days:
+            pages = [p for p in pages if p <= 5]  # 限制在5页以内
         elif isinstance(pages, int):
             pages = [pages]
-            
+                        
         all_video_data = []
         
-        for page in pages:
-            # 构建搜索URL
-            encoded_keyword = quote(keyword)
-            search_url = f"https://{self.search_host}/video?keyword={encoded_keyword}&from_source=webtop_search&page={page}&search_source=3&order=click"
+        # 处理近期日期选项-限制在5页以内
+        if recent_days is not None:
+            # 生成每天的时间范围
+            now = datetime.now()
+            daily_ranges = []
             
-            # time_begin 和 time_end 是日期格式，并且必须同时存在
-            if time_begin or time_end:
-                if not time_begin or not time_end:
-                    raise ValueError("time_begin 和 time_end 必须同时存在")
-                # 将时间转换为时间戳
+            for day in range(recent_days):
+                end_date = now - timedelta(days=day)
+                start_date = end_date.replace(hour=0, minute=0, second=0)
+                end_date = end_date.replace(hour=23, minute=59, second=59)
+                
+                daily_ranges.append({
+                    "begin": start_date.strftime("%Y-%m-%d %H:%M:%S"),
+                    "end": end_date.strftime("%Y-%m-%d %H:%M:%S"),
+                    "label": f"近{day+1}天"
+                })
+            
+            # 创建进度条，总数为关键词*天数*页面数
+            total_iterations = len(daily_ranges) * len(pages)
+            pbar = tqdm(total=total_iterations, desc=f"搜索关键词: {keyword}")
+            
+            for date_range in daily_ranges:
+                day_begin = date_range["begin"]
+                day_end = date_range["end"]
+                day_label = date_range["label"]
+                
+                for page in pages:
+                    pbar.set_description(f"搜索关键词: {keyword} - {day_label} - 第{page}页")
+                    
+                    # 构建搜索URL
+                    encoded_keyword = quote(keyword)
+                    search_url = f"https://{self.search_host}/video?keyword={encoded_keyword}&from_source=webtop_search&page={page}&search_source=3&order=click"
+                    
+                    try:
+                        # 添加时间戳参数
+                        begin_ts = int(time.mktime(time.strptime(day_begin, "%Y-%m-%d %H:%M:%S")))
+                        end_ts = int(time.mktime(time.strptime(day_end, "%Y-%m-%d %H:%M:%S")))
+                        search_url += f"&pubtime_begin_s={begin_ts}&pubtime_end_s={end_ts}"
+                        
+                        # 使用bil_search_page获取搜索结果
+                        video_df = bil_search_page(search_url)
+                        video_df = video_df.dropna(subset=['BV号'])
+                        video_df = video_df.drop_duplicates(subset=['BV号'], keep='first')
+                        
+                        if isinstance(video_df, pd.DataFrame) and not video_df.empty:
+                            for _, video in video_df.iterrows():
+                                # 基本信息
+                                basic_info = {
+                                    "video": {
+                                        "bvid": video['BV号'],
+                                        "title": video.get('标题', ''),
+                                        "view_count": self._parse_view_count(video.get('播放量', '0')),
+                                        "pubdate": video.get('发布时间', ''),
+                                        "duration": video.get('时长', ''),
+                                        "description": video.get('视频介绍', ''),
+                                        "aid": 0,  # 初始值，详细信息获取时会更新
+                                        "_from_search": True,
+                                        "_search_keyword": keyword,
+                                        "_search_page": page,
+                                        "_search_day": day_label
+                                    },
+                                    "owner": {
+                                        "name": video.get('作者', video.get('UP主', '')),
+                                        "mid": 0
+                                    }
+                                }
+                                all_video_data.append(basic_info)
+                        
+                        pbar.update(1)
+                        await asyncio.sleep(random.uniform(0.5, 1.5))
+                        
+                    except Exception as e:
+                        print(f"搜索页 {page} - {day_label} 处理失败: {str(e)}")
+                        pbar.update(1)
+                        continue
+            
+            pbar.close()
+            
+        else:
+            # 原有逻辑 - 按照指定的时间范围搜索
+            total_pages = len(pages)
+            pbar = tqdm(total=total_pages, desc=f"搜索关键词: {keyword}")
+            
+            for page in pages:
+                pbar.set_description(f"搜索关键词: {keyword} - 第{page}页")
+                
+                # 构建搜索URL
+                encoded_keyword = quote(keyword)
+                search_url = f"https://{self.search_host}/video?keyword={encoded_keyword}&from_source=webtop_search&page={page}&search_source=3&order=click"
+                
+                # time_begin 和 time_end 是日期格式，并且必须同时存在
+                if time_begin or time_end:
+                    if not time_begin or not time_end:
+                        raise ValueError("time_begin 和 time_end 必须同时存在")
+                    # 将时间转换为时间戳
+                    try:
+                        time_begin_ts = int(time.mktime(time.strptime(time_begin, "%Y-%m-%d %H:%M:%S")))
+                        time_end_ts = int(time.mktime(time.strptime(time_end, "%Y-%m-%d %H:%M:%S")))
+                        search_url += f"&pubtime_begin_s={time_begin_ts}&pubtime_end_s={time_end_ts}"
+                    except ValueError as e:
+                        raise ValueError(f"时间格式错误: {e}")
+                
+                # 使用bil_search_page获取搜索结果
                 try:
-                    time_begin_ts = int(time.mktime(time.strptime(time_begin, "%Y-%m-%d %H:%M:%S")))
-                    time_end_ts = int(time.mktime(time.strptime(time_end, "%Y-%m-%d %H:%M:%S")))
-                    search_url += f"&pubtime_begin_s={time_begin_ts}&pubtime_end_s={time_end_ts}"
-                except ValueError as e:
-                    raise ValueError(f"时间格式错误: {e}")
-            
-            # 使用bil_search_page获取搜索结果
-            try:
-                video_df = bil_search_page(search_url)
-                video_df = video_df.dropna(subset=['BV号'])
-                video_df = video_df.drop_duplicates(subset=['BV号'], keep='first')
-                
-                if isinstance(video_df, pd.DataFrame) and not video_df.empty:
-                    for _, video in video_df.iterrows():
-                        # 基本信息
-                        basic_info = {
-                            "video": {
-                                "bvid": video['BV号'],
-                                "title": video.get('标题', ''),
-                                "view_count": self._parse_view_count(video.get('播放量', '0')),
-                                "pubdate": video.get('发布时间', ''),
-                                "duration": video.get('时长', ''),
-                                "description": video.get('视频介绍', ''),
-                                "aid": 0,  # 初始值，详细信息获取时会更新
-                                "_from_search": True,
-                                "_search_keyword": keyword,
-                                "_search_page": page
-                            },
-                            "owner": {
-                                "name": video.get('作者', video.get('UP主', '')),
-                                "mid": 0
+                    video_df = bil_search_page(search_url)
+                    video_df = video_df.dropna(subset=['BV号'])
+                    video_df = video_df.drop_duplicates(subset=['BV号'], keep='first')
+                    
+                    if isinstance(video_df, pd.DataFrame) and not video_df.empty:
+                        for _, video in video_df.iterrows():
+                            # 基本信息
+                            basic_info = {
+                                "video": {
+                                    "bvid": video['BV号'],
+                                    "title": video.get('标题', ''),
+                                    "view_count": self._parse_view_count(video.get('播放量', '0')),
+                                    "pubdate": video.get('发布时间', ''),
+                                    "duration": video.get('时长', ''),
+                                    "description": video.get('视频介绍', ''),
+                                    "aid": 0,  # 初始值，详细信息获取时会更新
+                                    "_from_search": True,
+                                    "_search_keyword": keyword,
+                                    "_search_page": page
+                                },
+                                "owner": {
+                                    "name": video.get('作者', video.get('UP主', '')),
+                                    "mid": 0
+                                }
                             }
-                        }
-                        all_video_data.append(basic_info)
-                
-                await asyncio.sleep(random.uniform(0.5, 1.5))
-                
-            except Exception as e:
-                print(f"搜索页 {page} 处理失败: {str(e)}")
-                continue
+                            all_video_data.append(basic_info)
+                    
+                    pbar.update(1)
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
+                    
+                except Exception as e:
+                    print(f"搜索页 {page} 处理失败: {str(e)}")
+                    pbar.update(1)
+                    continue
+            
+            pbar.close()
         
         # 去重（基于BV号）
         unique_videos = {}
@@ -132,9 +225,9 @@ class BilibiliAPI:
             if bvid not in unique_videos:
                 unique_videos[bvid] = video
         
+        print(f"搜索完成，找到 {len(unique_videos)} 个唯一视频")
         return list(unique_videos.values())
 
-    # ...existing code...
     
     async def get_videos_detail(self, videos, max_concurrent=3, show_progress=True) -> List[Dict]:
         """
@@ -258,14 +351,24 @@ class BilibiliAPI:
         
         return detailed_videos
 
-    async def search_and_get_video_info(self, keyword, time_begin=None, time_end=None, page=1) -> List[Dict]:
+    async def search_and_get_video_info(self, keyword, time_begin=None, time_end=None, page=1, recent_days=None) -> List[Dict]:
         """
-        根据关键词搜索视频并获取详细信息（兼容旧版接口）
-        """
-        # 基本信息
-        basic_videos = await self.search_videos(keyword, time_begin, time_end, [page])
+        根据关键词搜索视频并获取详细信息
         
-        # 详细信息
+        参数:
+            keyword: 关键词
+            time_begin: 开始时间
+            time_end: 结束时间
+            page: 页码
+            recent_days: 最近几天，如果设置，将按天搜索
+        
+        返回:
+            包含详细视频信息的列表
+        """
+        # 获取基本信息
+        basic_videos = await self.search_videos(keyword, time_begin, time_end, [page], recent_days)
+        
+        # 获取详细信息
         detailed_videos = await self.get_videos_detail(basic_videos)
         
         return detailed_videos
