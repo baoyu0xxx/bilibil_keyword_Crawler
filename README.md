@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-这是一个基于Python的B站视频信息与评论采集工具，可以根据关键词搜索相关视频、获取视频详情信息以及爬取视频评论。采用异步IO技术大幅提升评论爬取效率，支持视频基本信息和评论数据的导出，采用随机Cookie生成技术避免被反爬封禁。新增支持MySQL数据库存储功能，以及灵活的数据输出配置。
+这是一个基于Python的B站视频信息与评论采集工具，可以根据关键词搜索相关视频、获取视频详情信息以及爬取视频评论。采用异步IO技术大幅提升评论爬取效率，支持视频基本信息和评论数据的导出，采用随机Cookie生成技术避免被反爬封禁。支持MySQL数据库存储功能，以及灵活的数据输出配置。新增按天搜索功能，可以获取最近几天内的视频数据。
 
 ## 功能特性
 
@@ -10,6 +10,7 @@
   - 支持关键词搜索视频
   - 支持多个关键词的AND/OR逻辑组合查询
   - 支持按时间范围筛选视频
+  - **新增按天搜索功能，可获取最近N天的视频**
   - 支持视频标题黑名单过滤
   - 自动获取视频详情页信息(播放量、点赞数等)
 
@@ -22,14 +23,14 @@
   - 自动生成随机Cookie和请求头
   - 随机延时请求避免触发频率限制
   - 自动处理请求失败和重试机制
-  - **分批次处理请求，控制并发数量**
-  - **优化的资源管理，防止请求过载**
+  - 分批次处理请求，控制并发数量
+  - 优化的资源管理，防止请求过载
   - 进度条显示采集状态
 
 - **数据导出**
   - 支持多种格式：Excel（xlsx）和CSV
   - 支持简洁模式与全字段模式
-  - **支持MySQL数据库存储**
+  - 支持MySQL数据库存储
   - 评论数据CSV导出（支持UTF-8编码）
 
 ## 环境要求
@@ -76,9 +77,14 @@ config = {
         "host": "localhost",
         "port": 3306,
         "user": "root",
-        "password": "password",
+        "password": "your_password",
         "database": "bilibili_data",
         "charset": "utf8mb4"
+    },
+    "db_tables": {
+        "videos": "bili_videos",      # 视频信息表名
+        "owners": "bili_owners",      # UP主信息表名
+        "comments": "bili_comments"   # 评论信息表名
     }
 }
 ```
@@ -88,7 +94,7 @@ config = {
 可以通过命令行参数覆盖配置文件中的设置:
 
 ```bash
-python main.py --keyword "搜索关键词" --max-page 3 --format xlsx --output-mode full --comments --use-db
+python main.py --keyword "搜索关键词" --max-page 3 --format xlsx --output-mode full --comments --use-db --recent-days 7
 ```
 
 主要参数:
@@ -101,6 +107,7 @@ python main.py --keyword "搜索关键词" --max-page 3 --format xlsx --output-m
 - `--no-db`: 禁用数据库存储
 - `--no-details`: 不获取视频详情
 - `--comments-max-page`: 设置评论最大页数
+- `--recent-days`: 设置获取最近几天的数据，启用按天搜索功能
 
 ### 3. 数据库设置
 
@@ -177,6 +184,18 @@ ORDER BY comment_count DESC
 LIMIT 10;
 ```
 
+## 新增功能：按天搜索
+
+### 使用方法
+
+在命令行中使用 `--recent-days` 参数指定要获取的最近天数：
+
+```bash
+python main.py --keyword "崩铁" --recent-days 7 --max-page 3 --comments
+```
+
+这将分别获取最近7天内每天发布的视频，每天最多搜索3页结果。此功能适合获取时间跨度较大的数据，或按日期观察视频发布趋势。
+
 ## 项目结构
 
 ```
@@ -186,7 +205,7 @@ LIMIT 10;
 ├── bil_search_page.py     # 搜索页面解析
 ├── bil_comment_crawl.py   # 评论采集模块(异步实现)
 ├── random_bil_cookie.py   # Cookie生成工具
-├── db_handler.py          # 数据库处理模块(新增)
+├── db_handler.py          # 数据库处理模块
 └── test_effiency.ipynb    # 效率测试模块
 ```
 
