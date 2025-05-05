@@ -5,12 +5,12 @@ config = {
     "tids": "",               # 分区ID，空字符串表示全部分区
     "is_union": True,         # True表示OR逻辑(并集)，False表示AND逻辑(交集)
     "file_path": "./bilibili_search.csv",  # 搜索结果保存路径
-    "page": 30,               # 每关键词搜索页数(B站限制了搜索页数)
+    "page": 30,               # 每关键词搜索页数
     
     # 时间范围筛选
     "time_begin": None,       # 起始时间，如 "2024-01-01 00:00:00"
     "time_end": None,         # 结束时间，如 "2024-06-01 23:59:59"
-    "recent_hot_days": 7,     # 热门视频时间范围(天)，0表示不启用，此设置会覆盖time_begin/time_end
+    "recent_hot_days": 365,     # 热门视频时间范围(天)，0表示不启用，此设置会覆盖time_begin/time_end
     
     # 评论采集配置
     "fetch_comments": False,  # 是否采集视频评论
