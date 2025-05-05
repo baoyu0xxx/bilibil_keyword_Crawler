@@ -1,6 +1,5 @@
-import mysql.connector
-from mysql.connector import Error
-import pandas as pd
+import pymysql
+from pymysql.err import Error
 from tqdm import tqdm
 import time
 import re
@@ -24,33 +23,52 @@ class DatabaseHandler:
     def connect(self):
         """建立数据库连接"""
         try:
-            self.connection = mysql.connector.connect(
+            # pymysql 使用的连接参数与 mysql.connector 略有不同
+            self.connection = pymysql.connect(
                 host=self.db_config["host"],
                 port=self.db_config["port"],
                 user=self.db_config["user"],
                 password=self.db_config["password"],
-                database=self.db_config["database"]
+                database=self.db_config["database"],
+                charset=self.db_config.get("charset", "utf8mb4")
             )
             
-            if self.connection.is_connected():
+            # pymysql 没有 is_connected 方法，通过尝试获取服务器版本来检查连接
+            try:
                 self.cursor = self.connection.cursor()
+                self.cursor.execute("SELECT VERSION()")
                 print(f"已成功连接到MySQL数据库: {self.db_config['database']}")
                 return True
+            except:
+                print("无法连接到MySQL数据库")
+                return False
         except Error as e:
             print(f"连接MySQL数据库时发生错误: {e}")
             return False
             
     def close(self):
         """关闭数据库连接"""
-        if self.connection and self.connection.is_connected():
-            if self.cursor:
-                self.cursor.close()
-            self.connection.close()
-            print("MySQL数据库连接已关闭")
+        if self.connection:
+            try:
+                # pymysql 不需要检查 is_connected
+                if self.cursor:
+                    self.cursor.close()
+                self.connection.close()
+                print("MySQL数据库连接已关闭")
+            except Exception as e:
+                print(f"关闭数据库连接时出错: {e}")
     
     def init_database(self):
         """初始化数据库表结构"""
-        if not self.connection or not self.connection.is_connected():
+        # pymysql 没有 is_connected 方法，改为尝试执行查询来检查连接
+        try:
+            if not self.connection:
+                if not self.connect():
+                    return False
+            
+            # 测试连接
+            self.cursor.execute("SELECT 1")
+        except:
             if not self.connect():
                 return False
         
@@ -143,8 +161,18 @@ class DatabaseHandler:
         Args:
             videos_data: 包含视频信息的字典列表
         """
-        if not self.connection or not self.connection.is_connected():
+        # 连接检查
+        try:
+            if not self.connection:
+                if not self.connect():
+                    print("数据库连接失败，无法插入数据")
+                    return
+                    
+            # 测试连接
+            self.cursor.execute("SELECT 1")
+        except:
             if not self.connect():
+                print("数据库连接异常，无法插入数据")
                 return
         
         videos_table = self.db_tables['videos']
@@ -220,6 +248,8 @@ class DatabaseHandler:
                     owner_mid = VALUES(owner_mid),
                     updated_at = CURRENT_TIMESTAMP
                 """
+                # pymysql 的 executemany 实现不同于 mysql.connector
+                # 但是行为应该类似，这里不需要修改
                 self.cursor.executemany(video_insert_query, videos_to_insert)
             
             # 插入UP主信息
@@ -251,7 +281,15 @@ class DatabaseHandler:
             bvid: 视频BV号
             aid: 视频AV号（OID）
         """
-        if not self.connection or not self.connection.is_connected():
+        # 连接检查
+        try:
+            if not self.connection:
+                if not self.connect():
+                    return
+                
+            # 测试连接
+            self.cursor.execute("SELECT 1")
+        except:
             if not self.connect():
                 return
         

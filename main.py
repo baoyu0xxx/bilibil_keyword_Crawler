@@ -1,22 +1,19 @@
 import asyncio
 import pandas as pd
-import numpy as np
 from config import config
 from bilibili_api import BilibiliAPI
 import re
 import os
 from bil_comment_crawl import start_async as crawl_comments
 import csv
-import logging
-import time
 import random
 from tqdm import tqdm
 import traceback
-import sys
 import argparse
-import json
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
+from mysql_export import save_videos_to_mysql, save_comments_to_mysql
+
 
 # 引入工具函数
 from crawl_utils import (
@@ -69,14 +66,6 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
     api = BilibiliAPI()
     keywords_combined = mix_keywords(config["keywords"], config["is_union"])
     print(f"关键词数量: {len(keywords_combined)}, 每关键词页数: {config['page']}")
-
-    # 初始化数据库处理器
-    db_handler = None
-    if config["use_database"] and DatabaseHandler:
-        db_handler = DatabaseHandler(config)
-        if not db_handler.connect() or not db_handler.init_database():
-            print("数据库初始化失败，将仅保存到文件")
-            config["use_database"] = False
     
     # 第一步：获取视频基本信息
     print("\n=== 第一阶段：获取视频基本信息 ===")
@@ -207,11 +196,16 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
             print(f"数据已保存到CSV文件: {output_path}")
         except Exception as e:
             print(f"保存CSV失败: {str(e)}")
-    
-    # 如果启用了数据库存储，将数据保存到数据库
+
     if config["use_database"] and db_handler:
-        print("\n=== 将数据保存到MySQL数据库 ===")
-        db_handler.insert_videos(detailed_results)
+        print("\n=== 将视频数据保存到MySQL数据库 ===")
+        db_handler = DatabaseHandler(config)
+        if not db_handler.connect() or not db_handler.init_database():
+            print("数据库初始化失败，无法保存视频数据")
+            return
+        
+        # 保存视频数据到数据库
+        save_videos_to_mysql(detailed_results, config)
     
     # 第三步：获取视频评论（可选）
     comment_files = []
@@ -271,19 +265,16 @@ async def main(max_page=20, fetch_details=True, fetch_comments=False, comments_m
             await asyncio.sleep(random.uniform(0.5, 1.5))
         
         comment_pbar.close()
-        
-        # 如果需要保存到数据库
-        if config["use_database"] and db_handler and comment_files:
-            print("\n=== 将评论数据保存到MySQL数据库 ===")
-            for bvid, aid, csv_path in tqdm(comment_files, desc="导入评论到数据库"):
-                comments_data = extract_comment_data(csv_path)
-                if comments_data:
-                    db_handler.insert_comments(comments_data, bvid, aid)
-    
-    # 关闭数据库连接
-    if config["use_database"] and db_handler:
-        db_handler.close()
 
+        if config["use_database"] and db_handler:
+            print("\n=== 将评论数据保存到MySQL数据库 ===")
+            if not db_handler.connect():
+                print("数据库连接失败，无法保存评论数据")
+                return
+            
+            # 保存评论数据到数据库
+            save_comments_to_mysql(comment_files, config)
+        
     print("\n任务完成!")
     return {
         "video_count": len(detailed_results),
